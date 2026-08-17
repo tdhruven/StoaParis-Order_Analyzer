@@ -125,7 +125,7 @@ section{margin-bottom:38px;scroll-margin-top:70px;}
 .section-head h2{font-size:20px;}
 .section-head p{font-size:12.8px;max-width:860px;line-height:1.6;}
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-lg);padding:18px 20px;
-  box-shadow:var(--shadow);}
+  box-shadow:var(--shadow);min-width:0;}
 .card h4{font-size:14px;margin-bottom:12px;color:var(--ink);}
 .grid2{display:grid;grid-template-columns:1.1fr 1fr;gap:16px;}
 .grid2b{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
@@ -152,8 +152,9 @@ tbody tr:last-child td{border-bottom:none;}
 
 /* ---- controls & bits ---- */
 .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;font-size:13px;}
+.controls select{flex:1 1 auto;min-width:0;}
 select,input[type=text],input[type=date],input[type=number]{border:1px solid var(--line);border-radius:3px;
-  padding:6px 9px;font-size:12.5px;font-family:inherit;background:#fffdf9;color:var(--ink);}
+  padding:6px 9px;font-size:12.5px;font-family:inherit;background:#fffdf9;color:var(--ink);max-width:100%;}
 select:focus,input:focus{outline:2px solid var(--gold);outline-offset:-1px;border-color:var(--gold-deep);}
 .badge-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;}
 .footnote{font-size:11.5px;color:var(--ink-mute);margin-top:10px;line-height:1.55;}
@@ -212,6 +213,7 @@ footer{padding:34px 22px 60px;text-align:center;font-size:12px;color:var(--ink-m
         <a href="#categories">Categories</a>
         <a href="#collections">Collections</a>
         <a href="#sizes">Sizes</a>
+        <a href="#crosssell">Cross-Sell</a>
         <a href="#journeys">Journeys</a>
         <a href="#basket">Bought Together</a>
         <a href="#geo">Geo &amp; Discounts</a>
@@ -1112,6 +1114,33 @@ function computeMetrics(ordersMap, filters={}){
     });
   });
 
+  // ---- Category / Collection cross-sell: what a customer's first order touched
+  // vs. what they bought in their 2nd order ("Next"), or in any order after the
+  // first ("Any") — e.g. did Date Night buyers come back for Vogue, did Bedsheet
+  // Set buyers move on to Comforters. Same cross-product-of-Sets pattern as the
+  // product journey matrices above, just at category/collection granularity. ----
+  function buildCrossSell(setKey){
+    const matrixNext = {}, totalsNext = {};
+    const matrixAny = {}, totalsAny = {};
+    customers.filter(c=>c.orderCount>=2).forEach(c => {
+      const firstVals = c.orders[0][setKey] || [];
+      const secondVals = c.orders[1][setKey] || [];
+      const laterVals = new Set();
+      for (let i=1;i<c.orders.length;i++) (c.orders[i][setKey]||[]).forEach(v=>laterVals.add(v));
+      firstVals.forEach(a => {
+        totalsNext[a] = (totalsNext[a]||0) + 1;
+        totalsAny[a] = (totalsAny[a]||0) + 1;
+        if (!matrixNext[a]) matrixNext[a] = {};
+        secondVals.forEach(b => { matrixNext[a][b] = (matrixNext[a][b]||0) + 1; });
+        if (!matrixAny[a]) matrixAny[a] = {};
+        laterVals.forEach(b => { matrixAny[a][b] = (matrixAny[a][b]||0) + 1; });
+      });
+    });
+    return { matrixNext, totalsNext, matrixAny, totalsAny };
+  }
+  const categoryFlow = buildCrossSell('categorySet');
+  const collectionFlow = buildCrossSell('collectionSet');
+
   // ---- Frequently bought together (within same order) ----
   const pairCounts = {};
   const singleOrderCounts = {};
@@ -1169,6 +1198,7 @@ function computeMetrics(ordersMap, filters={}){
     ltvBuckets, customers, segCounts, segRevenue,
     monthlyArr, cohortMap, cohortMonths, maxOffset,
     products, categories, collections, sizes, skuMasterCoverage,
+    categoryFlow, collectionFlow,
     variantGroups, forwardMatrix, reverseMatrix, entryProductTotals, subsequentProductTotals,
     pairs, geo, discountStats, discountCodes,
     totalValidOrdersAll: pre.totalValidOrders, totalCustomersAll: pre.totalCustomersAll,
@@ -1233,6 +1263,7 @@ function renderDashboard(m){
   renderCategories(content, m);
   renderCollections(content, m);
   renderSizes(content, m);
+  renderCrossSell(content, m);
   renderJourneys(content, m);
   renderBasket(content, m);
   renderGeoDiscount(content, m);
@@ -1391,7 +1422,7 @@ function renderCohorts(content, m){
       const monthsElapsed = (m.maxDate.getFullYear()-parseInt(cm.split('-')[0]))*12 + (m.maxDate.getMonth()+1-parseInt(cm.split('-')[1]));
       if (i > monthsElapsed) { html += `<td class="num heat-cell" style="color:#d3c6ac">—</td>`; continue; }
       const alpha = Math.min(0.9, pct*1.6+0.06);
-      html += `<td class="num heat-cell" style="background:rgba(63,81,71,${alpha.toFixed(2)});color:${alpha>0.45?'#faf4eb':'#20231f'}">${(pct*100).toFixed(0)}%</td>`;
+      html += `<td class="num heat-cell" style="background:rgba(44,49,66,${alpha.toFixed(2)});color:${alpha>0.45?'#fffdfa':'#221f1c'}">${(pct*100).toFixed(0)}%</td>`;
     }
     html += '</tr>';
   });
@@ -1443,6 +1474,126 @@ function renderProducts(content, m){
     {key:'entryAvgLtv',label:'Entry cohort avg LTV',num:true,fmt:INR},
     {key:'entryRepeatRate',label:'Entry cohort repeat rate',num:true,fmt:PCT},
   ], m.products, {defaultSort:'revenue', limit:200});
+}
+
+function renderCrossSell(content, m){
+  const sec = el('section', {id:'crosssell'});
+  sec.appendChild(el('div',{class:'section-head'},'<h2>Category &amp; Collection Cross-Sell</h2><p>Among customers who went on to place a second order: pick what they bought first to see what they bought next — e.g. did Date Night buyers come back for Vogue, or did Bedsheet Set buyers move on to Comforters? Switch to "collection" for the same view by collection line, and tick the box to widen from "just their next order" to "anything they bought afterwards".</p>'));
+
+  const card = el('div',{class:'card'});
+  const controls = el('div',{class:'controls'});
+  const catBtn = el('button',{class:'btn small',id:'xsDimCategory'},'By category');
+  const collBtn = el('button',{class:'btn small secondary',id:'xsDimCollection'},'By collection');
+  controls.appendChild(catBtn);
+  controls.appendChild(collBtn);
+  const sel = el('select',{id:'xsStart'});
+  controls.appendChild(el('span',{},'Bought first: '));
+  controls.appendChild(sel);
+  const anyLabel = el('label',{style:'display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-soft);cursor:pointer;'});
+  const anyChk = el('input',{type:'checkbox',id:'xsAny'});
+  anyLabel.appendChild(anyChk);
+  anyLabel.appendChild(document.createTextNode('Include everything bought after, not just order #2'));
+  controls.appendChild(anyLabel);
+  card.appendChild(controls);
+
+  const statsRow = el('div',{class:'kpi-grid',id:'xsStats'});
+  statsRow.style.marginBottom = '14px';
+  card.appendChild(statsRow);
+
+  card.appendChild(el('h4',{},'What they bought next'));
+  const list = el('ul',{class:'flow-list',id:'xsList'});
+  card.appendChild(list);
+  sec.appendChild(card);
+
+  const matrixCard = el('div',{class:'card'});
+  matrixCard.style.marginTop = '16px';
+  matrixCard.appendChild(el('h4',{},'Full cross-sell matrix'));
+  matrixCard.appendChild(el('p',{},'Rows = bought first, columns = bought next. Each % is of that row\'s starting customers. Limited to the top 14 by customer count for readability — use the picker above for anything further down the list.'));
+  const matrixDiv = el('div',{id:'xsMatrix'});
+  matrixCard.appendChild(matrixDiv);
+  sec.appendChild(matrixCard);
+  content.appendChild(sec);
+
+  let dim = 'category';
+  const currentFlow = () => dim === 'category' ? m.categoryFlow : m.collectionFlow;
+
+  function populateStart(){
+    const flow = currentFlow();
+    const options = Object.keys(flow.totalsNext).sort((a,b)=>flow.totalsNext[b]-flow.totalsNext[a]);
+    const prev = sel.value;
+    sel.innerHTML = '';
+    options.forEach(o => sel.appendChild(el('option',{value:o}, `${o} (${fmtNum(flow.totalsNext[o])} customers)`)));
+    sel.value = options.includes(prev) ? prev : (options[0] || '');
+  }
+
+  function renderMatrix(matrix, totals){
+    const topStarts = Object.keys(totals).sort((a,b)=>totals[b]-totals[a]).slice(0,14);
+    if (!topStarts.length){ matrixDiv.innerHTML = '<p>Not enough repeat-purchase data yet.</p>'; return; }
+    let html = '<div class="table-scroll"><table><thead><tr><th>First ↓ / Next →</th>' +
+      topStarts.map(s=>`<th>${s}</th>`).join('') + '</tr></thead><tbody>';
+    topStarts.forEach(rowKey => {
+      const rowTotal = totals[rowKey] || 1;
+      html += `<tr><td>${rowKey}</td>`;
+      topStarts.forEach(colKey => {
+        const v = (matrix[rowKey]||{})[colKey] || 0;
+        const pct = v / rowTotal * 100;
+        const isDiag = rowKey === colKey;
+        const alpha = Math.min(0.9, pct/40*0.9 + 0.04);
+        const rgb = isDiag ? '201,161,90' : '44,49,66';
+        html += `<td class="num heat-cell" style="background:rgba(${rgb},${alpha.toFixed(2)});color:${alpha>0.45?'#fffdfa':'#221f1c'}">${pct.toFixed(0)}%</td>`;
+      });
+      html += '</tr>';
+    });
+    html += '</tbody></table></div>';
+    matrixDiv.innerHTML = html;
+  }
+
+  function render(){
+    const flow = currentFlow();
+    const useAny = anyChk.checked;
+    const matrix = useAny ? flow.matrixAny : flow.matrixNext;
+    const totals = useAny ? flow.totalsAny : flow.totalsNext;
+    const start = sel.value;
+    const total = totals[start] || 0;
+    const row = matrix[start] || {};
+    const sameAgain = row[start] || 0;
+    const entries = Object.entries(row).filter(([k])=>k!==start).sort((a,b)=>b[1]-a[1]).slice(0,12);
+    const maxV = Math.max(1, sameAgain, ...entries.map(x=>x[1]));
+
+    statsRow.innerHTML = '';
+    [
+      [`Repeat customers who bought "${start}" first`, fmtNum(total)],
+      [useAny ? 'Bought it again at some point' : 'Bought it again next', `${fmtNum(sameAgain)} (${total?PCT(sameAgain/total):'0%'})`],
+      ['Top switch-to', entries.length ? entries[0][0] : '—'],
+    ].forEach(([label,val]) => {
+      statsRow.appendChild(el('div',{class:'kpi'}, `<div class="label">${label}</div><div class="val" style="font-size:18px">${val}</div>`));
+    });
+
+    const rows = [];
+    if (sameAgain) rows.push([`${start} (bought it again)`, sameAgain]);
+    rows.push(...entries);
+    list.innerHTML = rows.length ? rows.map(([name,count]) => `
+      <li><span>${name}</span>
+      <span class="flow-bar-bg"><span class="flow-bar" style="width:${(count/maxV*100).toFixed(0)}%"></span></span>
+      <span class="r">${fmtNum(count)} (${total?PCT(count/total):'0%'})</span></li>`).join('')
+      : '<li>Not enough data for this starting point.</li>';
+
+    renderMatrix(matrix, totals);
+  }
+
+  catBtn.addEventListener('click', () => {
+    dim = 'category'; catBtn.classList.remove('secondary'); collBtn.classList.add('secondary');
+    populateStart(); render();
+  });
+  collBtn.addEventListener('click', () => {
+    dim = 'collection'; collBtn.classList.remove('secondary'); catBtn.classList.add('secondary');
+    populateStart(); render();
+  });
+  sel.addEventListener('change', render);
+  anyChk.addEventListener('change', render);
+
+  populateStart();
+  render();
 }
 
 function renderJourneys(content, m){
