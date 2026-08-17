@@ -3,7 +3,8 @@
 A single self-contained HTML dashboard that turns Shopify `orders_export_*.csv` files into a
 full customer & product analytics view — purchase cadence, LTV/RFM segments, cohort retention,
 product performance, collections, sizes, category/collection cross-sell, product journeys,
-frequently-bought-together, geography and discount impact. Responsive down to phone width.
+collection journeys, frequently-bought-together, geography and discount impact. Responsive
+down to phone width.
 
 Everything runs **client-side in your browser**. No data is uploaded anywhere.
 

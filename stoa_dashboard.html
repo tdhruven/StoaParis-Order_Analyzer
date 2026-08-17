@@ -215,6 +215,7 @@ footer{padding:34px 22px 60px;text-align:center;font-size:12px;color:var(--ink-m
         <a href="#sizes">Sizes</a>
         <a href="#crosssell">Cross-Sell</a>
         <a href="#journeys">Journeys</a>
+        <a href="#collJourneys">Collection Journeys</a>
         <a href="#basket">Bought Together</a>
         <a href="#geo">Geo &amp; Discounts</a>
         <a href="#catalog">Catalog Cleanup</a>
@@ -1141,6 +1142,31 @@ function computeMetrics(ordersMap, filters={}){
   const categoryFlow = buildCrossSell('categorySet');
   const collectionFlow = buildCrossSell('collectionSet');
 
+  // ---- Collection journeys: same shape as the product journeys above (entry
+  // collection -> anything bought in any later order, and the reverse lookup),
+  // reusing collectionFlow.matrixAny/totalsAny since "any later order" is exactly
+  // that data. Also a full-cohort (not repeat-restricted) entry LTV/repeat-rate
+  // lookup for the "Top entry collections" table, matching how product entry
+  // stats are computed below. ----
+  const collectionForwardMatrix = collectionFlow.matrixAny;
+  const collectionEntryTotals = collectionFlow.totalsAny;
+  const collectionReverseMatrix = {};
+  Object.entries(collectionForwardMatrix).forEach(([entryColl, tos]) => {
+    Object.entries(tos).forEach(([toColl, count]) => {
+      if (!collectionReverseMatrix[toColl]) collectionReverseMatrix[toColl] = {};
+      collectionReverseMatrix[toColl][entryColl] = count;
+    });
+  });
+  const collectionEntryCohort = {};
+  customers.forEach(c => {
+    (c.orders[0].collectionSet || []).forEach(cn => {
+      if (!collectionEntryCohort[cn]) collectionEntryCohort[cn] = {count:0, ltvSum:0, repeatCount:0};
+      collectionEntryCohort[cn].count++;
+      collectionEntryCohort[cn].ltvSum += c.ltv;
+      if (c.orderCount>=2) collectionEntryCohort[cn].repeatCount++;
+    });
+  });
+
   // ---- Frequently bought together (within same order) ----
   const pairCounts = {};
   const singleOrderCounts = {};
@@ -1199,6 +1225,7 @@ function computeMetrics(ordersMap, filters={}){
     monthlyArr, cohortMap, cohortMonths, maxOffset,
     products, categories, collections, sizes, skuMasterCoverage,
     categoryFlow, collectionFlow,
+    collectionForwardMatrix, collectionReverseMatrix, collectionEntryTotals, collectionEntryCohort,
     variantGroups, forwardMatrix, reverseMatrix, entryProductTotals, subsequentProductTotals,
     pairs, geo, discountStats, discountCodes,
     totalValidOrdersAll: pre.totalValidOrders, totalCustomersAll: pre.totalCustomersAll,
@@ -1265,6 +1292,7 @@ function renderDashboard(m){
   renderSizes(content, m);
   renderCrossSell(content, m);
   renderJourneys(content, m);
+  renderCollectionJourneys(content, m);
   renderBasket(content, m);
   renderGeoDiscount(content, m);
   renderCatalogCleanup(content, m);
@@ -1649,6 +1677,70 @@ function renderJourneys(content, m){
   const entryRows = m.products.filter(p=>p.entryCustomers>0).sort((a,b)=>b.entryCustomers-a.entryCustomers);
   sortableTable(entryTbl, [
     {key:'name',label:'Product'},
+    {key:'entryCustomers',label:'Customers who started here',num:true,fmt:fmtNum},
+    {key:'entryRepeatRate',label:'% who went on to repeat',num:true,fmt:PCT},
+    {key:'entryAvgLtv',label:'Avg cohort LTV',num:true,fmt:INR},
+  ], entryRows, {defaultSort:'entryCustomers', limit:100});
+}
+
+function renderCollectionJourneys(content, m){
+  const sec = el('section', {id:'collJourneys'});
+  sec.appendChild(el('div',{class:'section-head'},'<h2>Collection Journeys</h2><p>Same idea as Product Journeys, one level up: pick a collection to see, among customers who repeat-purchased: (left) what they bought first before ending up buying this collection, and (right) — when this collection was their entry point — what they went on to buy afterwards.</p>'));
+  const card = el('div',{class:'card'});
+  const allCollectionNames = [...new Set(m.collections.map(c=>c.collection))].sort();
+  const controls = el('div',{class:'controls'});
+  const sel = el('select',{id:'collJourneySelect'});
+  allCollectionNames.forEach(c => sel.appendChild(el('option',{value:c}, c)));
+  controls.appendChild(el('span',{},'Collection: '));
+  controls.appendChild(sel);
+  card.appendChild(controls);
+  const flowWrap = el('div',{class:'two-col-flow'});
+  const leftCol = el('div',{},'<h4>Entry collections that led here (reverse)</h4>');
+  const leftList = el('ul',{class:'flow-list',id:'collReverseFlow'});
+  leftCol.appendChild(leftList);
+  const rightCol = el('div',{},'<h4>What they bought next, when this was the entry collection (forward)</h4>');
+  const rightList = el('ul',{class:'flow-list',id:'collForwardFlow'});
+  rightCol.appendChild(rightList);
+  flowWrap.appendChild(leftCol); flowWrap.appendChild(rightCol);
+  card.appendChild(flowWrap);
+  sec.appendChild(card);
+
+  const topEntryCard = el('div',{class:'card'}); topEntryCard.style.marginTop = '16px';
+  topEntryCard.appendChild(el('h4',{},'Top entry collections (best acquisition hooks)'));
+  topEntryCard.appendChild(el('p',{},'Ranked by how many customers started their journey with this collection, alongside how well that cohort goes on to repeat.'));
+  const entryTbl = el('div'); topEntryCard.appendChild(entryTbl);
+  sec.appendChild(topEntryCard);
+  content.appendChild(sec);
+
+  function renderFlows(coll){
+    const fwd = m.collectionForwardMatrix[coll] || {};
+    const rev = m.collectionReverseMatrix[coll] || {};
+    const fwdTotal = m.collectionEntryTotals[coll] || 0;
+    const revTotal = Object.values(rev).reduce((s,v)=>s+v,0);
+    const fwdSorted = Object.entries(fwd).filter(([k])=>k!==coll).sort((a,b)=>b[1]-a[1]).slice(0,10);
+    const revSorted = Object.entries(rev).filter(([k])=>k!==coll).sort((a,b)=>b[1]-a[1]).slice(0,10);
+    const maxFwd = Math.max(1,...fwdSorted.map(x=>x[1]));
+    const maxRev = Math.max(1,...revSorted.map(x=>x[1]));
+    document.getElementById('collForwardFlow').innerHTML = fwdSorted.length ? fwdSorted.map(([name,count]) =>
+      `<li><span>${name}</span><span class="flow-bar-bg"><span class="flow-bar" style="width:${(count/maxFwd*100).toFixed(0)}%;background:${PALETTE[1]}"></span></span><span class="r">${count} (${fwdTotal?PCT(count/fwdTotal):'0%'})</span></li>`
+    ).join('') : '<li>Not enough repeat-purchase data for this collection as an entry point.</li>';
+    document.getElementById('collReverseFlow').innerHTML = revSorted.length ? revSorted.map(([name,count]) =>
+      `<li><span>${name}</span><span class="flow-bar-bg"><span class="flow-bar" style="width:${(count/maxRev*100).toFixed(0)}%"></span></span><span class="r">${count} (${revTotal?PCT(count/revTotal):'0%'})</span></li>`
+    ).join('') : '<li>Not enough data — this collection was rarely a later purchase.</li>';
+  }
+  sel.addEventListener('change', () => renderFlows(sel.value));
+  const defaultColl = m.collections[0] ? m.collections[0].collection : allCollectionNames[0];
+  sel.value = defaultColl;
+  renderFlows(defaultColl);
+
+  const entryRows = Object.entries(m.collectionEntryCohort).map(([name, ec]) => ({
+    name,
+    entryCustomers: ec.count,
+    entryRepeatRate: ec.count ? ec.repeatCount/ec.count : 0,
+    entryAvgLtv: ec.count ? ec.ltvSum/ec.count : 0,
+  })).filter(r=>r.entryCustomers>0);
+  sortableTable(entryTbl, [
+    {key:'name',label:'Collection'},
     {key:'entryCustomers',label:'Customers who started here',num:true,fmt:fmtNum},
     {key:'entryRepeatRate',label:'% who went on to repeat',num:true,fmt:PCT},
     {key:'entryAvgLtv',label:'Avg cohort LTV',num:true,fmt:INR},
