@@ -1122,11 +1122,14 @@ function computeMetrics(ordersMap, filters={}){
   // product journey matrices above, just at category/collection granularity.
   // totalsAll covers EVERY customer (including one-and-done buyers) so drop-off
   // is visible; totalsNext/totalsAny only cover repeat customers, since only they
-  // have a "next" purchase to look at. ----
+  // have a "next" purchase to look at. destTotalsNext/destTotalsAny are the mirror
+  // image — unique customers who ended up with a given value as their 2nd/any
+  // later purchase — used to power the reverse ("what led here") direction. ----
   function buildCrossSell(setKey){
     const matrixNext = {}, totalsNext = {};
     const matrixAny = {}, totalsAny = {};
     const totalsAll = {};
+    const destTotalsNext = {}, destTotalsAny = {};
     customers.forEach(c => {
       (c.orders[0][setKey] || []).forEach(a => { totalsAll[a] = (totalsAll[a]||0) + 1; });
     });
@@ -1143,8 +1146,10 @@ function computeMetrics(ordersMap, filters={}){
         if (!matrixAny[a]) matrixAny[a] = {};
         laterVals.forEach(b => { matrixAny[a][b] = (matrixAny[a][b]||0) + 1; });
       });
+      secondVals.forEach(b => { destTotalsNext[b] = (destTotalsNext[b]||0) + 1; });
+      laterVals.forEach(b => { destTotalsAny[b] = (destTotalsAny[b]||0) + 1; });
     });
-    return { matrixNext, totalsNext, matrixAny, totalsAny, totalsAll };
+    return { matrixNext, totalsNext, matrixAny, totalsAny, totalsAll, destTotalsNext, destTotalsAny };
   }
   const categoryFlow = buildCrossSell('categorySet');
   const collectionFlow = buildCrossSell('collectionSet');
@@ -1546,7 +1551,7 @@ function renderProducts(content, m){
 
 function renderCrossSell(content, m){
   const sec = el('section', {id:'crosssell'});
-  sec.appendChild(el('div',{class:'section-head'},'<h2>Category &amp; Collection Cross-Sell</h2><p>Pick what a customer bought first to see what they bought next — e.g. did Date Night buyers come back for Vogue, or did Bedsheet Set buyers move on to Comforters? Percentages are of <em>every</em> customer who bought that first, including the ones who never ordered again, so drop-off is visible alongside cross-sell. Switch to "collection" for the same view by collection line, and tick the box to widen from "just their next order" to "anything they bought afterwards".</p>'));
+  sec.appendChild(el('div',{class:'section-head'},'<h2>Category &amp; Collection Cross-Sell</h2><p>Pick what a customer bought first to see what they bought next — e.g. did Date Night buyers come back for Vogue, or did Bedsheet Set buyers move on to Comforters? Percentages are of <em>every</em> customer who bought that first, including the ones who never ordered again, so drop-off is visible alongside cross-sell. Flip the direction to go the other way — pick a collection (e.g. a new one) and see what customers bought <em>before</em> it. Switch to "collection" for the same views by collection line, and tick the box to widen from "just their next/previous order" to "anywhere in their history".</p>'));
 
   const card = el('div',{class:'card'});
   const controls = el('div',{class:'controls'});
@@ -1554,13 +1559,19 @@ function renderCrossSell(content, m){
   const collBtn = el('button',{class:'btn small secondary',id:'xsDimCollection'},'By collection');
   controls.appendChild(catBtn);
   controls.appendChild(collBtn);
+  const fwdBtn = el('button',{class:'btn small',id:'xsDirFwd'},'Bought first →');
+  const revBtn = el('button',{class:'btn small secondary',id:'xsDirRev'},'← What led here');
+  controls.appendChild(fwdBtn);
+  controls.appendChild(revBtn);
+  const startLabel = el('span',{},'Bought first: ');
+  controls.appendChild(startLabel);
   const sel = el('select',{id:'xsStart'});
-  controls.appendChild(el('span',{},'Bought first: '));
   controls.appendChild(sel);
   const anyLabel = el('label',{style:'display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-soft);cursor:pointer;'});
   const anyChk = el('input',{type:'checkbox',id:'xsAny'});
   anyLabel.appendChild(anyChk);
-  anyLabel.appendChild(document.createTextNode('Include everything bought after, not just order #2'));
+  const anyLabelText = document.createTextNode('Include everything bought after, not just order #2');
+  anyLabel.appendChild(anyLabelText);
   controls.appendChild(anyLabel);
   card.appendChild(controls);
 
@@ -1568,7 +1579,8 @@ function renderCrossSell(content, m){
   statsRow.style.marginBottom = '14px';
   card.appendChild(statsRow);
 
-  card.appendChild(el('h4',{},'What they bought next'));
+  const listHeading = el('h4',{},'What they bought next');
+  card.appendChild(listHeading);
   const list = el('ul',{class:'flow-list',id:'xsList'});
   card.appendChild(list);
   sec.appendChild(card);
@@ -1576,35 +1588,58 @@ function renderCrossSell(content, m){
   const matrixCard = el('div',{class:'card'});
   matrixCard.style.marginTop = '16px';
   matrixCard.appendChild(el('h4',{},'Full cross-sell matrix'));
-  matrixCard.appendChild(el('p',{},'Rows = bought first, columns = bought next. "Dropped off" is the % of that row\'s customers who never ordered again, at all. Every % is of that row\'s total starting customers (repeat and one-time). Limited to the top 14 by customer count for readability — use the picker above for anything further down the list.'));
+  const matrixDesc = el('p',{},'Rows = bought first, columns = bought next. "Dropped off" is the % of that row\'s customers who never ordered again, at all. Every % is of that row\'s total starting customers (repeat and one-time). Limited to the top 14 by customer count for readability — use the picker above for anything further down the list.');
+  matrixCard.appendChild(matrixDesc);
   const matrixDiv = el('div',{id:'xsMatrix'});
   matrixCard.appendChild(matrixDiv);
   sec.appendChild(matrixCard);
   content.appendChild(sec);
 
   let dim = 'category';
+  let reverseDir = false;
   const currentFlow = () => dim === 'category' ? m.categoryFlow : m.collectionFlow;
+  const transpose = (matrix) => {
+    const t = {};
+    Object.entries(matrix).forEach(([a, tos]) => {
+      Object.entries(tos).forEach(([b, count]) => {
+        if (!t[b]) t[b] = {};
+        t[b][a] = count;
+      });
+    });
+    return t;
+  };
 
   function populateStart(){
     const flow = currentFlow();
-    const options = Object.keys(flow.totalsAll).sort((a,b)=>flow.totalsAll[b]-flow.totalsAll[a]);
+    const useAny = anyChk.checked;
+    const totalsSrc = reverseDir ? (useAny ? flow.destTotalsAny : flow.destTotalsNext) : flow.totalsAll;
+    const options = Object.keys(totalsSrc).sort((a,b)=>totalsSrc[b]-totalsSrc[a]);
     const prev = sel.value;
     sel.innerHTML = '';
-    options.forEach(o => sel.appendChild(el('option',{value:o}, `${o} (${fmtNum(flow.totalsAll[o])} customers)`)));
+    options.forEach(o => sel.appendChild(el('option',{value:o}, `${o} (${fmtNum(totalsSrc[o])} customers)`)));
     sel.value = options.includes(prev) ? prev : (options[0] || '');
+    startLabel.textContent = reverseDir ? 'Ends up buying: ' : 'Bought first: ';
+    anyLabelText.textContent = reverseDir
+      ? 'Include their whole prior history, not just their immediately previous order'
+      : 'Include everything bought after, not just order #2';
   }
 
-  function renderMatrix(matrix, repeatTotals, totalsAll){
-    const topStarts = Object.keys(totalsAll).sort((a,b)=>totalsAll[b]-totalsAll[a]).slice(0,14);
+  function renderMatrix(matrix, repeatTotals, rowSource, isReverse){
+    const topStarts = Object.keys(rowSource).sort((a,b)=>rowSource[b]-rowSource[a]).slice(0,14);
     if (!topStarts.length){ matrixDiv.innerHTML = '<p>Not enough data yet.</p>'; return; }
-    let html = '<div class="table-scroll"><table><thead><tr><th>First ↓ / Next →</th><th>Dropped off</th>' +
+    const headLabel = isReverse ? 'Ends up buying ↓ / Bought first →' : 'First ↓ / Next →';
+    let html = '<div class="table-scroll"><table><thead><tr><th>'+headLabel+'</th>' +
+      (isReverse ? '' : '<th>Dropped off</th>') +
       topStarts.map(s=>`<th>${s}</th>`).join('') + '</tr></thead><tbody>';
     topStarts.forEach(rowKey => {
-      const rowTotal = totalsAll[rowKey] || 1;
-      const dropped = Math.max(0, rowTotal - (repeatTotals[rowKey] || 0));
-      const dropPct = dropped / rowTotal * 100;
-      const dropAlpha = Math.min(0.9, dropPct/60*0.9 + 0.04);
-      html += `<tr><td>${rowKey}</td><td class="num heat-cell" style="background:rgba(168,64,42,${dropAlpha.toFixed(2)});color:${dropPct>45?'#fffdfa':'#221f1c'}">${dropPct.toFixed(0)}%</td>`;
+      const rowTotal = rowSource[rowKey] || 1;
+      html += `<tr><td>${rowKey}</td>`;
+      if (!isReverse){
+        const dropped = Math.max(0, rowTotal - (repeatTotals[rowKey] || 0));
+        const dropPct = dropped / rowTotal * 100;
+        const dropAlpha = Math.min(0.9, dropPct/60*0.9 + 0.04);
+        html += `<td class="num heat-cell" style="background:rgba(168,64,42,${dropAlpha.toFixed(2)});color:${dropPct>45?'#fffdfa':'#221f1c'}">${dropPct.toFixed(0)}%</td>`;
+      }
       topStarts.forEach(colKey => {
         const v = (matrix[rowKey]||{})[colKey] || 0;
         const pct = v / rowTotal * 100;
@@ -1622,38 +1657,49 @@ function renderCrossSell(content, m){
   function render(){
     const flow = currentFlow();
     const useAny = anyChk.checked;
-    const matrix = useAny ? flow.matrixAny : flow.matrixNext;
+    const fwdMatrix = useAny ? flow.matrixAny : flow.matrixNext;
+    const matrix = reverseDir ? transpose(fwdMatrix) : fwdMatrix;
     const repeatTotals = useAny ? flow.totalsAny : flow.totalsNext;
+    const destTotals = useAny ? flow.destTotalsAny : flow.destTotalsNext;
     const start = sel.value;
-    const totalAll = flow.totalsAll[start] || 0;
-    const totalRepeat = repeatTotals[start] || 0;
-    const droppedOff = Math.max(0, totalAll - totalRepeat);
+    const total = reverseDir ? (destTotals[start] || 0) : (flow.totalsAll[start] || 0);
+    const droppedOff = reverseDir ? 0 : Math.max(0, total - (repeatTotals[start] || 0));
     const row = matrix[start] || {};
-    const sameAgain = row[start] || 0;
+    const selfCount = row[start] || 0;
     const entries = Object.entries(row).filter(([k])=>k!==start).sort((a,b)=>b[1]-a[1]).slice(0,12);
-    const maxV = Math.max(1, sameAgain, droppedOff, ...entries.map(x=>x[1]));
+    const maxV = Math.max(1, selfCount, droppedOff, ...entries.map(x=>x[1]));
 
     statsRow.innerHTML = '';
-    [
-      [`Customers who bought "${start}" first`, fmtNum(totalAll)],
-      ['Never came back', `${fmtNum(droppedOff)} (${totalAll?PCT(droppedOff/totalAll):'0%'})`],
-      [useAny ? 'Bought it again at some point' : 'Bought it again next', `${fmtNum(sameAgain)} (${totalAll?PCT(sameAgain/totalAll):'0%'})`],
+    const kpis = reverseDir ? [
+      [`Customers who ${useAny ? 'ever bought' : 'bought next'} "${start}"`, fmtNum(total)],
+      ['Also had it in their first order', `${fmtNum(selfCount)} (${total?PCT(selfCount/total):'0%'})`],
+      ['Top lead-in', entries.length ? entries[0][0] : '—'],
+    ] : [
+      [`Customers who bought "${start}" first`, fmtNum(total)],
+      ['Never came back', `${fmtNum(droppedOff)} (${total?PCT(droppedOff/total):'0%'})`],
+      [useAny ? 'Bought it again at some point' : 'Bought it again next', `${fmtNum(selfCount)} (${total?PCT(selfCount/total):'0%'})`],
       ['Top switch-to', entries.length ? entries[0][0] : '—'],
-    ].forEach(([label,val]) => {
+    ];
+    kpis.forEach(([label,val]) => {
       statsRow.appendChild(el('div',{class:'kpi'}, `<div class="label">${label}</div><div class="val" style="font-size:18px">${val}</div>`));
     });
 
+    listHeading.textContent = reverseDir ? 'What they bought before' : 'What they bought next';
+    matrixDesc.textContent = reverseDir
+      ? 'Rows = ends up buying, columns = bought first. Every % is of that row\'s total customers who ended up buying it. Limited to the top 14 by customer count for readability — use the picker above for anything further down the list.'
+      : 'Rows = bought first, columns = bought next. "Dropped off" is the % of that row\'s customers who never ordered again, at all. Every % is of that row\'s total starting customers (repeat and one-time). Limited to the top 14 by customer count for readability — use the picker above for anything further down the list.';
+
     const rows = [];
-    if (droppedOff) rows.push(['Never came back', droppedOff, true]);
-    if (sameAgain) rows.push([`${start} (bought it again)`, sameAgain, false]);
+    if (!reverseDir && droppedOff) rows.push(['Never came back', droppedOff, true]);
+    if (selfCount) rows.push([reverseDir ? `${start} (also in their first order)` : `${start} (bought it again)`, selfCount, false]);
     entries.forEach(e => rows.push([e[0], e[1], false]));
     list.innerHTML = rows.length ? rows.map(([name,count,isDrop]) => `
       <li><span>${name}</span>
       <span class="flow-bar-bg"><span class="flow-bar" style="width:${(count/maxV*100).toFixed(0)}%${isDrop?';background:var(--bad)':''}"></span></span>
-      <span class="r">${fmtNum(count)} (${totalAll?PCT(count/totalAll):'0%'})</span></li>`).join('')
+      <span class="r">${fmtNum(count)} (${total?PCT(count/total):'0%'})</span></li>`).join('')
       : '<li>Not enough data for this starting point.</li>';
 
-    renderMatrix(matrix, repeatTotals, flow.totalsAll);
+    renderMatrix(matrix, repeatTotals, reverseDir ? destTotals : flow.totalsAll, reverseDir);
   }
 
   catBtn.addEventListener('click', () => {
@@ -1664,8 +1710,16 @@ function renderCrossSell(content, m){
     dim = 'collection'; collBtn.classList.remove('secondary'); catBtn.classList.add('secondary');
     populateStart(); render();
   });
+  fwdBtn.addEventListener('click', () => {
+    reverseDir = false; fwdBtn.classList.remove('secondary'); revBtn.classList.add('secondary');
+    populateStart(); render();
+  });
+  revBtn.addEventListener('click', () => {
+    reverseDir = true; revBtn.classList.remove('secondary'); fwdBtn.classList.add('secondary');
+    populateStart(); render();
+  });
   sel.addEventListener('change', render);
-  anyChk.addEventListener('change', render);
+  anyChk.addEventListener('change', () => { populateStart(); render(); });
 
   populateStart();
   render();
