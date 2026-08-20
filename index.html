@@ -1174,6 +1174,38 @@ function computeMetrics(ordersMap, filters={}){
     });
   });
 
+  // ---- "What did they buy before THIS" (any prior order, not just their very
+  // first) — for a newly-launched collection almost nobody has it as their entry
+  // point, so the reverse-journey-from-first-order view above under-answers "who
+  // is buying my new collection and what were they buying before". This instead
+  // walks each customer's order history and, the first time a given
+  // category/collection shows up, records every value seen in ANY earlier order
+  // (not just order #1) as a "prior" — one row per customer per target so a
+  // frequent repeat-buyer of the target doesn't skew it. ----
+  function buildPriorMatrix(setKey){
+    const matrix = {}, totals = {};
+    customers.forEach(c => {
+      if (c.orders.length < 2) return;
+      const seenTargets = new Set();
+      const priorSoFar = new Set(c.orders[0][setKey] || []);
+      for (let i=1;i<c.orders.length;i++){
+        const thisOrderVals = c.orders[i][setKey] || [];
+        thisOrderVals.forEach(target => {
+          if (!seenTargets.has(target)){
+            seenTargets.add(target);
+            totals[target] = (totals[target]||0) + 1;
+            if (!matrix[target]) matrix[target] = {};
+            priorSoFar.forEach(prior => { matrix[target][prior] = (matrix[target][prior]||0) + 1; });
+          }
+        });
+        thisOrderVals.forEach(v => priorSoFar.add(v));
+      }
+    });
+    return { matrix, totals };
+  }
+  const categoryPriorFlow = buildPriorMatrix('categorySet');
+  const collectionPriorFlow = buildPriorMatrix('collectionSet');
+
   // ---- Frequently bought together (within same order) ----
   const pairCounts = {};
   const singleOrderCounts = {};
@@ -1233,6 +1265,7 @@ function computeMetrics(ordersMap, filters={}){
     products, categories, collections, sizes, skuMasterCoverage,
     categoryFlow, collectionFlow,
     collectionForwardMatrix, collectionReverseMatrix, collectionEntryTotals, collectionEntryCohort,
+    categoryPriorFlow, collectionPriorFlow,
     variantGroups, forwardMatrix, reverseMatrix, entryProductTotals, subsequentProductTotals,
     pairs, geo, discountStats, discountCodes,
     totalValidOrdersAll: pre.totalValidOrders, totalCustomersAll: pre.totalCustomersAll,
@@ -1699,7 +1732,7 @@ function renderJourneys(content, m){
 
 function renderCollectionJourneys(content, m){
   const sec = el('section', {id:'collJourneys'});
-  sec.appendChild(el('div',{class:'section-head'},'<h2>Collection Journeys</h2><p>Same idea as Product Journeys, one level up: pick a collection to see, among customers who repeat-purchased: (left) what they bought first before ending up buying this collection, and (right) — when this collection was their entry point — what they went on to buy afterwards.</p>'));
+  sec.appendChild(el('div',{class:'section-head'},'<h2>Collection Journeys</h2><p>Same idea as Product Journeys, one level up: pick a collection to see, among customers who repeat-purchased: (left) what they bought before ending up buying this collection, and (right) — when this collection was their entry point — what they went on to buy afterwards. Useful for a newly-launched collection: switch the left panel to "any prior order" to see what your existing customers had already bought before they picked this one up, not just what total newcomers started with.</p>'));
   const card = el('div',{class:'card'});
   const allCollectionNames = [...new Set(m.collections.map(c=>c.collection))].sort();
   const controls = el('div',{class:'controls'});
@@ -1707,9 +1740,14 @@ function renderCollectionJourneys(content, m){
   allCollectionNames.forEach(c => sel.appendChild(el('option',{value:c}, c)));
   controls.appendChild(el('span',{},'Collection: '));
   controls.appendChild(sel);
+  const priorLabel = el('label',{style:'display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-soft);cursor:pointer;'});
+  const priorChk = el('input',{type:'checkbox',id:'collPriorAny'});
+  priorLabel.appendChild(priorChk);
+  priorLabel.appendChild(document.createTextNode('Left panel: compare against any prior order, not just their very first'));
+  controls.appendChild(priorLabel);
   card.appendChild(controls);
   const flowWrap = el('div',{class:'two-col-flow'});
-  const leftCol = el('div',{},'<h4>Entry collections that led here (reverse)</h4>');
+  const leftCol = el('div',{},'<h4 id="collLeftHeading">Entry collections that led here (reverse)</h4>');
   const leftList = el('ul',{class:'flow-list',id:'collReverseFlow'});
   leftCol.appendChild(leftList);
   const rightCol = el('div',{},'<h4>What they bought next, when this was the entry collection (forward)</h4>');
@@ -1727,10 +1765,14 @@ function renderCollectionJourneys(content, m){
   content.appendChild(sec);
 
   function renderFlows(coll){
+    const usePrior = priorChk.checked;
     const fwd = m.collectionForwardMatrix[coll] || {};
-    const rev = m.collectionReverseMatrix[coll] || {};
+    const rev = usePrior ? (m.collectionPriorFlow.matrix[coll] || {}) : (m.collectionReverseMatrix[coll] || {});
     const fwdTotal = m.collectionEntryTotals[coll] || 0;
-    const revTotal = Object.values(rev).reduce((s,v)=>s+v,0);
+    const revTotal = usePrior ? (m.collectionPriorFlow.totals[coll] || 0) : Object.values(rev).reduce((s,v)=>s+v,0);
+    document.getElementById('collLeftHeading').textContent = usePrior
+      ? 'What they\'d already bought before this, at any point (reverse)'
+      : 'Entry collections that led here (reverse)';
     const fwdSorted = Object.entries(fwd).filter(([k])=>k!==coll).sort((a,b)=>b[1]-a[1]).slice(0,10);
     const revSorted = Object.entries(rev).filter(([k])=>k!==coll).sort((a,b)=>b[1]-a[1]).slice(0,10);
     const maxFwd = Math.max(1,...fwdSorted.map(x=>x[1]));
@@ -1740,9 +1782,10 @@ function renderCollectionJourneys(content, m){
     ).join('') : '<li>Not enough repeat-purchase data for this collection as an entry point.</li>';
     document.getElementById('collReverseFlow').innerHTML = revSorted.length ? revSorted.map(([name,count]) =>
       `<li><span>${name}</span><span class="flow-bar-bg"><span class="flow-bar" style="width:${(count/maxRev*100).toFixed(0)}%"></span></span><span class="r">${count} (${revTotal?PCT(count/revTotal):'0%'})</span></li>`
-    ).join('') : '<li>Not enough data — this collection was rarely a later purchase.</li>';
+    ).join('') : (usePrior ? '<li>Not enough data — no one had a prior order before buying this collection.</li>' : '<li>Not enough data — this collection was rarely a later purchase.</li>');
   }
   sel.addEventListener('change', () => renderFlows(sel.value));
+  priorChk.addEventListener('change', () => renderFlows(sel.value));
   const defaultColl = m.collections[0] ? m.collections[0].collection : allCollectionNames[0];
   sel.value = defaultColl;
   renderFlows(defaultColl);
